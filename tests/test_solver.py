@@ -66,6 +66,16 @@ def test_zero_constraint_implies_safe() -> None:
                 assert result.probabilities[n] == 0.0
 
 
+def test_mcmc_exact_mine_budget_normalization() -> None:
+    board = MinesweeperBoard(8, 8, 10, seed=7)
+    board.reveal((4, 4))
+    result = MCMCSolver(samples=300, burn_in=100, thinning=2, seed=7).infer(board)
+    hidden = board.unflagged_hidden_cells()
+    total = sum(result.probabilities[c] for c in hidden)
+    assert abs(total - (board.mines - len(board.flagged))) < 1e-9
+    assert all(0.0 <= result.probabilities[c] <= 1.0 for c in hidden)
+
+
 def test_mcmc_preserves_global_mine_count() -> None:
     board = MinesweeperBoard(8, 8, 10, seed=7)
     board.reveal((4, 4))
