@@ -4,7 +4,6 @@ from collections import defaultdict
 from dataclasses import dataclass
 from math import comb
 import time
-from typing import Optional
 
 from .board import Cell, MinesweeperBoard
 from .constraints import Constraint, connected_components, extract_constraints
@@ -26,10 +25,18 @@ class InferenceResult:
     components: list[set[Cell]]
     total_configurations: int = 0
     method: str = "exact"
+    total_samples: int = 0
 
 
 class ExactProbabilitySolver:
-    def __init__(self, max_component_variables: int = 64, max_seconds: float | None = 2.0, max_nodes: int = 2_000_000) -> None:
+    """Exact posterior inference under a fixed global mine-count constraint."""
+
+    def __init__(
+        self,
+        max_component_variables: int = 64,
+        max_seconds: float | None = 2.0,
+        max_nodes: int = 2_000_000,
+    ) -> None:
         self.max_component_variables = max_component_variables
         self.max_seconds = max_seconds
         self.max_nodes = max_nodes
@@ -45,6 +52,9 @@ class ExactProbabilitySolver:
         if remaining_mines < 0 or remaining_mines > len(hidden):
             raise ValueError("Board state has an impossible remaining mine count")
 
+        if not hidden:
+            return InferenceResult(probabilities, True, frontier, interior, [], 1, "exact")
+
         if not frontier:
             p = remaining_mines / len(interior) if interior else 0.0
             for cell in interior:
@@ -57,54 +67,64 @@ class ExactProbabilitySolver:
         for component in components:
             if len(component) > self.max_component_variables:
                 raise RuntimeError(
-                    f"Frontier component has {len(component)} variables; exact enumeration cap is "
-                    f"{self.max_component_variables}. Use MCMC fallback."
+                    f"Frontier component has {len(component)} variables; "
+                    f"exact cap is {self.max_component_variables}."
                 )
             enumerated.append(self._enumerate_component(component, constraints))
 
+        frontier_distribution: dict[int, int] = {0: 1}
+        for comp in enumerated:
+            frontier_distribution = self._convolve(
+                frontier_distribution, comp.solution_count_by_mines
+            )
+
         total_configurations = 0
-        for mine_count_tuple in self._combine_counts(enumerated):
-            frontier_mines = sum(mine_count_tuple)
+        for frontier_mines, ways in frontier_distribution.items():
             interior_mines = remaining_mines - frontier_mines
             if 0 <= interior_mines <= len(interior):
-                ways = comb(len(interior), interior_mines)
-                for comp, k in zip(enumerated, mine_count_tuple):
-                    ways *= comp.solution_count_by_mines.get(k, 0)
-                total_configurations += ways
+                total_configurations += ways * comb(len(interior), interior_mines)
 
         if total_configurations == 0:
-            raise ValueError("No globally valid mine configuration exists for the current state")
+            raise ValueError("No globally valid mine configuration exists")
 
-        # Prefix/suffix distributions let us compute each component's global weight efficiently.
         prefix: list[dict[int, int]] = [{0: 1}]
         for comp in enumerated:
             prefix.append(self._convolve(prefix[-1], comp.solution_count_by_mines))
         suffix: list[dict[int, int]] = [{} for _ in range(len(enumerated) + 1)]
         suffix[-1] = {0: 1}
         for i in range(len(enumerated) - 1, -1, -1):
-            suffix[i] = self._convolve(enumerated[i].solution_count_by_mines, suffix[i + 1])
+            suffix[i] = self._convolve(
+                enumerated[i].solution_count_by_mines, suffix[i + 1]
+            )
 
         for i, comp in enumerate(enumerated):
             other = self._convolve(prefix[i], suffix[i + 1])
             for cell in comp.cells:
                 numerator = 0
-                per_k = comp.mine_count_by_cell_and_mines[cell]
-                for k, ways_cell_mine in per_k.items():
+                for k, ways_cell_mine in comp.mine_count_by_cell_and_mines[cell].items():
                     for other_mines, other_ways in other.items():
                         leftover = remaining_mines - k - other_mines
                         if 0 <= leftover <= len(interior):
-                            numerator += ways_cell_mine * other_ways * comb(len(interior), leftover)
+                            numerator += (
+                                ways_cell_mine
+                                * other_ways
+                                * comb(len(interior), leftover)
+                            )
                 probabilities[cell] = numerator / total_configurations
 
         if interior:
-            expected_leftover = 0.0
-            for frontier_mines, ways_frontier in prefix[-1].items():
+            weighted_leftover = 0
+            for frontier_mines, ways in frontier_distribution.items():
                 leftover = remaining_mines - frontier_mines
                 if 0 <= leftover <= len(interior):
-                    expected_leftover += ways_frontier * comb(len(interior), leftover) * leftover
-            probabilities_per_interior = expected_leftover / total_configurations / len(interior)
+                    weighted_leftover += (
+                        ways * comb(len(interior), leftover) * leftover
+                    )
+            p_interior = (
+                weighted_leftover / total_configurations / len(interior)
+            )
             for cell in interior:
-                probabilities[cell] = probabilities_per_interior
+                probabilities[cell] = p_interior
 
         return InferenceResult(
             probabilities=probabilities,
@@ -116,19 +136,24 @@ class ExactProbabilitySolver:
             method="exact",
         )
 
-    def _enumerate_component(self, component: set[Cell], constraints: list[Constraint]) -> ComponentEnumeration:
+    def _enumerate_component(
+        self, component: set[Cell], constraints: list[Constraint]
+    ) -> ComponentEnumeration:
         cells = tuple(sorted(component))
         local_constraints = [c for c in constraints if c.cells & component]
         index = {cell: i for i, cell in enumerate(cells)}
         c_vars = [[index[cell] for cell in c.cells] for c in local_constraints]
         c_targets = [c.mines for c in local_constraints]
         cell_to_constraints: list[list[int]] = [[] for _ in cells]
+
         for ci, vars_ in enumerate(c_vars):
             for vi in vars_:
                 cell_to_constraints[vi].append(ci)
 
-        # High-constraint-degree cells usually cause earlier pruning.
-        order = sorted(range(len(cells)), key=lambda i: (-len(cell_to_constraints[i]), cells[i]))
+        order = sorted(
+            range(len(cells)),
+            key=lambda i: (-len(cell_to_constraints[i]), cells[i]),
+        )
         assignment = [-1] * len(cells)
         assigned_mines = [0] * len(c_vars)
         assigned_count = [0] * len(c_vars)
@@ -141,18 +166,20 @@ class ExactProbabilitySolver:
         }
 
         def feasible(ci: int) -> bool:
-            remaining_slots = len(c_vars[ci]) - assigned_count[ci]
-            current = assigned_mines[ci]
-            target = c_targets[ci]
-            return current <= target <= current + remaining_slots
+            unassigned = len(c_vars[ci]) - assigned_count[ci]
+            return assigned_mines[ci] <= c_targets[ci] <= assigned_mines[ci] + unassigned
 
         def backtrack(pos: int) -> None:
             nonlocal visited_nodes
             visited_nodes += 1
             if self.max_nodes is not None and visited_nodes > self.max_nodes:
-                raise RuntimeError("Exact enumeration node budget exceeded; use MCMC fallback.")
-            if self.max_seconds is not None and time.perf_counter() - start_time > self.max_seconds:
-                raise RuntimeError("Exact enumeration time budget exceeded; use MCMC fallback.")
+                raise RuntimeError("Exact enumeration node budget exceeded.")
+            if (
+                self.max_seconds is not None
+                and time.perf_counter() - start_time > self.max_seconds
+            ):
+                raise RuntimeError("Exact enumeration time budget exceeded.")
+
             if pos == len(order):
                 total_mines = sum(assignment)
                 solution_count_by_mines[total_mines] += 1
@@ -176,11 +203,13 @@ class ExactProbabilitySolver:
             assignment[vi] = -1
 
         backtrack(0)
+
         return ComponentEnumeration(
             cells=cells,
             solution_count_by_mines=dict(solution_count_by_mines),
             mine_count_by_cell_and_mines={
-                cell: dict(counts) for cell, counts in mine_count_by_cell_and_mines.items()
+                cell: dict(counts)
+                for cell, counts in mine_count_by_cell_and_mines.items()
             },
         )
 
@@ -191,21 +220,3 @@ class ExactProbabilitySolver:
             for kb, vb in b.items():
                 result[ka + kb] += va * vb
         return dict(result)
-
-    def _combine_counts(self, components: list[ComponentEnumeration]):
-        if not components:
-            yield tuple()
-            return
-        # This function is kept lazy and is mainly useful for small component sets.
-        counts = [sorted(comp.solution_count_by_mines) for comp in components]
-        current = [0] * len(components)
-
-        def rec(i: int):
-            if i == len(components):
-                yield tuple(current)
-                return
-            for k in counts[i]:
-                current[i] = k
-                yield from rec(i + 1)
-
-        yield from rec(0)
