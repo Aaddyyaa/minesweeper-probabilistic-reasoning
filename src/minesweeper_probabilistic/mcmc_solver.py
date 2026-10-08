@@ -10,10 +10,17 @@ from .exact_solver import InferenceResult
 
 @dataclass
 class MCMCSolver:
+    """Constrained Metropolis-style sampler over globally valid mine layouts.
+
+    Proposals swap one mine with one safe cell, preserving the exact global
+    mine count. Because the target distribution is uniform over valid layouts,
+    every accepted valid state has equal weight.
+    """
+
     samples: int = 8000
     burn_in: int = 2000
     thinning: int = 5
-    restarts: int = 8
+    restarts: int = 4
     max_initial_nodes: int = 250_000
     seed: int | None = None
 
@@ -24,45 +31,48 @@ class MCMCSolver:
         probabilities: dict[Cell, float] = {cell: 0.0 for cell in board.revealed}
         probabilities.update({cell: 1.0 for cell in board.flagged})
 
+        if remaining_mines < 0 or remaining_mines > len(hidden):
+            raise ValueError("Invalid remaining mine count")
         if not hidden:
-            return InferenceResult(probabilities, False, frontier, interior, [], 1, "mcmc")
+            return InferenceResult(probabilities, False, frontier, interior, [], 1, "mcmc", 1)
 
         rng = random.Random(self.seed)
         assignment = self._find_valid_assignment(hidden, remaining_mines, constraints, rng)
         if assignment is None:
-            raise ValueError("MCMC could not find an initial state satisfying the revealed clues")
+            raise ValueError("MCMC could not find a valid initial state")
 
-        mine_set = set(cell for cell, value in assignment.items() if value)
+        mine_set = {cell for cell, value in assignment.items() if value}
         all_cells = list(hidden)
         mine_cells = [c for c in all_cells if c in mine_set]
         safe_cells = [c for c in all_cells if c not in mine_set]
         counts = {cell: 0 for cell in all_cells}
 
+        collected = 0
         accepted = 0
-        total_iterations = self.burn_in + self.samples * self.thinning
-        for step in range(total_iterations):
+        iterations = self.burn_in + self.samples * self.thinning
+        for step in range(iterations):
             if mine_cells and safe_cells:
                 mine_cell = rng.choice(mine_cells)
                 safe_cell = rng.choice(safe_cells)
-                candidate_mines = set(mine_set)
-                candidate_mines.remove(mine_cell)
-                candidate_mines.add(safe_cell)
-                if self._satisfies(candidate_mines, constraints):
-                    mine_set = candidate_mines
-                    mine_cells.remove(mine_cell)
-                    mine_cells.append(safe_cell)
-                    safe_cells.remove(safe_cell)
-                    safe_cells.append(mine_cell)
+                candidate = mine_set.copy()
+                candidate.remove(mine_cell)
+                candidate.add(safe_cell)
+                if self._satisfies(candidate, constraints):
+                    mine_set = candidate
+                    mine_cells[mine_cells.index(mine_cell)] = safe_cell
+                    safe_cells[safe_cells.index(safe_cell)] = mine_cell
                     accepted += 1
 
             if step >= self.burn_in and (step - self.burn_in) % self.thinning == 0:
                 for cell in all_cells:
-                    counts[cell] += cell in mine_set
+                    counts[cell] += int(cell in mine_set)
+                collected += 1
 
-        used_samples = max(1, self.samples)
+        if collected == 0:
+            raise RuntimeError("MCMC collected no samples")
+
         for cell in all_cells:
-            # Laplace smoothing prevents a finite chain from producing false certainty.
-            probabilities[cell] = (counts[cell] + 0.5) / (used_samples + 1.0)
+            probabilities[cell] = counts[cell] / collected
 
         return InferenceResult(
             probabilities=probabilities,
@@ -71,7 +81,8 @@ class MCMCSolver:
             interior_cells=interior,
             components=[],
             total_configurations=accepted,
-            method=f"mcmc ({accepted} accepted moves)",
+            method=f"mcmc ({accepted} accepted proposals)",
+            total_samples=collected,
         )
 
     def _find_valid_assignment(
@@ -81,16 +92,11 @@ class MCMCSolver:
         constraints: list[Constraint],
         rng: random.Random,
     ) -> dict[Cell, int] | None:
-        """Find one globally valid state without enumerating every solution.
-
-        The search is over frontier variables only; interior mines are filled
-        arbitrarily after a feasible frontier assignment is found.
-        """
         frontier = sorted({cell for c in constraints for cell in c.cells})
         interior = [cell for cell in cells if cell not in frontier]
         min_frontier_mines = max(0, mine_count - len(interior))
         max_frontier_mines = min(mine_count, len(frontier))
-        if not min_frontier_mines <= max_frontier_mines:
+        if min_frontier_mines > max_frontier_mines:
             return None
 
         index = {cell: i for i, cell in enumerate(frontier)}
@@ -118,13 +124,12 @@ class MCMCSolver:
                 return False
             if mines_so_far > max_frontier_mines:
                 return False
-            possible_max = mines_so_far + (len(order) - pos)
-            if possible_max < min_frontier_mines:
+            if mines_so_far + (len(order) - pos) < min_frontier_mines:
                 return False
             if pos == len(order):
-                if not (min_frontier_mines <= mines_so_far <= max_frontier_mines):
-                    return False
-                return all(feasible(ci) for ci in range(len(local)))
+                return min_frontier_mines <= mines_so_far <= max_frontier_mines and all(
+                    feasible(ci) for ci in range(len(local))
+                )
 
             vi = order[pos]
             values = [0, 1]
@@ -134,7 +139,9 @@ class MCMCSolver:
                 for ci in cell_constraints[vi]:
                     assigned_count[ci] += 1
                     assigned_mines[ci] += value
-                if all(feasible(ci) for ci in cell_constraints[vi]) and backtrack(pos + 1, mines_so_far + value):
+                if all(feasible(ci) for ci in cell_constraints[vi]) and backtrack(
+                    pos + 1, mines_so_far + value
+                ):
                     return True
                 for ci in cell_constraints[vi]:
                     assigned_count[ci] -= 1
@@ -154,11 +161,11 @@ class MCMCSolver:
 
     @staticmethod
     def _satisfies(mine_set: set[Cell], constraints: list[Constraint]) -> bool:
-        return all(len(mine_set & set(c.cells)) == c.mines for c in constraints)
+        return all(len(mine_set.intersection(c.cells)) == c.mines for c in constraints)
 
 
 class ConstraintHeuristicSolver:
-    """Fast fractional heuristic used only if exact/MCMC initialization is exhausted."""
+    """Last-resort fast heuristic when neither exact nor MCMC can initialize."""
 
     def infer(self, board: MinesweeperBoard) -> InferenceResult:
         constraints, frontier, interior = extract_constraints(board)
@@ -167,25 +174,25 @@ class ConstraintHeuristicSolver:
         probabilities = {cell: 0.0 for cell in board.revealed}
         probabilities.update({cell: 1.0 for cell in board.flagged})
         if not hidden:
-            return InferenceResult(probabilities, False, frontier, interior, [], 0, "constraint-heuristic")
+            return InferenceResult(probabilities, False, frontier, interior, [], 0, "constraint-heuristic", 0)
 
         global_prior = remaining_mines / len(hidden)
         p = {cell: global_prior for cell in hidden}
         for _ in range(12):
             updates = {cell: [] for cell in hidden}
-            for c in constraints:
-                denom = sum(max(p[cell], 1e-9) for cell in c.cells)
-                for cell in c.cells:
-                    share = p[cell] / denom if denom else 1.0 / len(c.cells)
-                    # Allocate the clue's remaining mines proportionally to current belief.
-                    updates[cell].append(c.mines * share)
+            for constraint in constraints:
+                denom = sum(max(p[cell], 1e-12) for cell in constraint.cells)
+                for cell in constraint.cells:
+                    share = p[cell] / denom if denom else 1.0 / len(constraint.cells)
+                    updates[cell].append(constraint.mines * share)
             for cell in frontier:
                 local = sum(updates[cell]) / len(updates[cell]) if updates[cell] else global_prior
                 p[cell] = min(1.0, max(0.0, 0.65 * local + 0.35 * global_prior))
-            # Keep the expected total mine count aligned with the global budget.
-            scale = remaining_mines / max(sum(p.values()), 1e-12)
-            for cell in hidden:
-                p[cell] = min(1.0, max(0.0, p[cell] * scale))
+            total = sum(p.values())
+            if total:
+                scale = remaining_mines / total
+                for cell in hidden:
+                    p[cell] = min(1.0, max(0.0, p[cell] * scale))
 
         probabilities.update(p)
-        return InferenceResult(probabilities, False, frontier, interior, [], 0, "constraint-heuristic")
+        return InferenceResult(probabilities, False, frontier, interior, [], 0, "constraint-heuristic", 0)
