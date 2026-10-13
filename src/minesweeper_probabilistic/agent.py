@@ -118,9 +118,13 @@ class ProbabilisticAgent:
             else:
                 heuristic_calls += 1
 
-            for cell, p in inference.probabilities.items():
-                if p >= 1.0 - 1e-12 and cell not in board.flagged and cell not in board.revealed:
-                    board.toggle_flag(cell)
+            # Only exact posterior probabilities can justify a logical flag.
+            # MCMC/heuristic probabilities are estimates; an estimated p=1.0
+            # can simply mean no sampled assignment marked the cell safe.
+            if inference.exact:
+                for cell, p in inference.probabilities.items():
+                    if p >= 1.0 - 1e-12 and cell not in board.flagged and cell not in board.revealed:
+                        board.toggle_flag(cell)
 
             chosen = self.policy.choose(board, inference)
             if chosen is None:
