@@ -9,10 +9,10 @@ from .agent import GameStats, ProbabilisticAgent, RuleBasedAgent
 from .board import MinesweeperBoard
 
 
+# Benchmark only the easy configuration (9x9 with 10 mines).
+# Medium and hard boards are intentionally excluded from this experiment.
 CONFIGS = {
     "easy": (9, 9, 10),
-    "medium": (16, 16, 40),
-    "hard": (30, 16, 99),
 }
 
 
