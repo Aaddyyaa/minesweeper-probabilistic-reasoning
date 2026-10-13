@@ -14,7 +14,7 @@ A research/academic implementation that treats Minesweeper as inference under un
 - **Approximate inference:** an MCMC/Gibbs-style constrained sampler is provided for frontier components that exceed the exact-enumeration cap.
 - **Sequential decision making:** a pure lowest-risk policy is compared with a risk + information utility policy.
 - **Baseline:** a deterministic clue-saturation + subset-difference solver with random guessing when no certain move exists.
-- **Experiments:** repeatable simulation on 9x9/10 mines, 16x16/40 mines, and 30x16/99 mines.
+- **Experiments:** repeatable, easy-only simulation on a 9x9 board with 10 mines. The benchmark compares baseline, probabilistic safety, and probabilistic utility policies. Medium and hard boards are excluded.
 - **Visuals:** posterior probability heatmaps and a variable/factor graph.
 
 ## Project structure
@@ -86,7 +86,6 @@ For a permanent package install (recommended):
 .\.venv\Scripts\python.exe -m pip install -e .
 ```
 
-
 ### 2. Generate the visual demo
 
 Windows PowerShell:
@@ -101,13 +100,12 @@ Linux/macOS:
 python -m minesweeper_probabilistic.main demo
 ```
 
-
 Outputs:
 
 - `results/probability_heatmap.png`
 - `results/factor_graph.png`
 
-### 3. Run solver experiments
+### 3. Run easy-only solver experiments
 
 Windows PowerShell:
 
@@ -121,14 +119,13 @@ Linux/macOS:
 python -m minesweeper_probabilistic.main experiment --games 100
 ```
 
-Use `--games 300` for the full 900-game comparison (300 games for each board configuration). The same board seed is evaluated by every solver.
+The experiment uses only the easy 9x9/10-mine board. Each seed is evaluated by all three policies: baseline, probabilistic safety, and probabilistic utility. Therefore `--games 100` produces 300 game records; `--games 300` produces 900 records, all on easy boards.
 
 Outputs:
 
 - `results/experiment_results.csv`
 - `results/win_rate_comparison.png`
 - `results/runtime_comparison.png`
-
 
 ### 4. Summarize results
 
@@ -144,19 +141,17 @@ Linux/macOS:
 python -m minesweeper_probabilistic.main summary
 ```
 
-
 ### 5. Play manually
 
 ```powershell
 .\.venv\Scripts\python.exe -m minesweeper_probabilistic.main game --rows 9 --cols 9 --mines 10
 ```
 
-
 ## Exact vs approximate inference
 
-Exact inference is used whenever every frontier connected component is no larger than the configured cap (default 64 variables). When a component exceeds the cap, the agent switches to the MCMC solver.
+Exact inference is used whenever every frontier connected component is no larger than the configured cap. When a component exceeds the cap, the agent switches to the MCMC solver.
 
-This makes the implementation practical while preserving the exact probabilistic method for small and medium uncertainty regions.
+This makes the implementation practical while preserving the exact probabilistic method for smaller uncertainty regions.
 
 ## What to discuss in the presentation
 
