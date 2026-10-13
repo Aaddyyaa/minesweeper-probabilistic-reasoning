@@ -63,17 +63,44 @@ Therefore every valid full-board assignment is counted equally under a uniform p
 
 ### 1. Install
 
+Windows PowerShell:
+
+```powershell
+py -3 -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+.\.venv\Scripts\python.exe -m pytest -q
+```
+
+Linux/macOS:
+
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
-pip install -r requirements.txt
+python -m pip install -r requirements.txt
+python -m pytest -q
 ```
+
+For a permanent package install (recommended):
+
+```powershell
+.\.venv\Scripts\python.exe -m pip install -e .
+```
+
 
 ### 2. Generate the visual demo
 
-```bash
-PYTHONPATH=src python -m minesweeper_probabilistic.main demo
+Windows PowerShell:
+
+```powershell
+.\.venv\Scripts\python.exe -m minesweeper_probabilistic.main demo
 ```
+
+Linux/macOS:
+
+```bash
+python -m minesweeper_probabilistic.main demo
+```
+
 
 Outputs:
 
@@ -82,27 +109,48 @@ Outputs:
 
 ### 3. Run solver experiments
 
-```bash
-PYTHONPATH=src python -m minesweeper_probabilistic.main experiment --games 300
+Windows PowerShell:
+
+```powershell
+.\.venv\Scripts\python.exe -m minesweeper_probabilistic.main experiment --games 100
 ```
 
-This creates:
+Linux/macOS:
+
+```bash
+python -m minesweeper_probabilistic.main experiment --games 100
+```
+
+Use `--games 300` for the full 900-game comparison (300 games for each board configuration). The same board seed is evaluated by every solver.
+
+Outputs:
 
 - `results/experiment_results.csv`
 - `results/win_rate_comparison.png`
 - `results/runtime_comparison.png`
 
+
 ### 4. Summarize results
 
-```bash
-PYTHONPATH=src python -m minesweeper_probabilistic.main summary
+Windows PowerShell:
+
+```powershell
+.\.venv\Scripts\python.exe -m minesweeper_probabilistic.main summary
 ```
+
+Linux/macOS:
+
+```bash
+python -m minesweeper_probabilistic.main summary
+```
+
 
 ### 5. Play manually
 
-```bash
-PYTHONPATH=src python -m minesweeper_probabilistic.main game --rows 9 --cols 9 --mines 10
+```powershell
+.\.venv\Scripts\python.exe -m minesweeper_probabilistic.main game --rows 9 --cols 9 --mines 10
 ```
+
 
 ## Exact vs approximate inference
 
